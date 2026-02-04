@@ -52,7 +52,10 @@ jobs:
 
             # ALIVE SUBDOMAINS
             subfinder -d "$domain" -silent | assetfinder --subs-only | sort -u > "$BASE/subs.txt"
-            httpx -l "$BASE/subs.txt" -silent > "$BASE/alive_now.txt"
+            httpx -l "$BASE/subs.txt" -silent | sort -u > "$BASE/alive_now.txt"
+
+            sort -u "$BASE/alive_master.txt" -o "$BASE/alive_master.txt"
+            sort -u "$BASE/alive_now.txt" -o "$BASE/alive_now.txt"
             comm -13 "$BASE/alive_master.txt" "$BASE/alive_now.txt" > "$BASE/alive_new.txt"
 
             if [ -s "$BASE/alive_new.txt" ]; then
@@ -68,6 +71,9 @@ jobs:
 
             # NUCLEI
             nuclei -l "$BASE/alive_now.txt" -silent | sort -u > "$BASE/nuclei_now.txt"
+
+            sort -u "$BASE/nuclei_master.txt" -o "$BASE/nuclei_master.txt"
+            sort -u "$BASE/nuclei_now.txt" -o "$BASE/nuclei_now.txt"
             comm -13 "$BASE/nuclei_master.txt" "$BASE/nuclei_now.txt" > "$BASE/nuclei_new.txt"
 
             if [ -s "$BASE/nuclei_new.txt" ]; then
@@ -81,7 +87,10 @@ jobs:
             fi
 
             # PORTS
-            naabu -list "$BASE/alive_now.txt" -silent > "$BASE/ports_now.txt"
+            naabu -list "$BASE/alive_now.txt" -silent | sort -u > "$BASE/ports_now.txt"
+
+            sort -u "$BASE/ports_master.txt" -o "$BASE/ports_master.txt"
+            sort -u "$BASE/ports_now.txt" -o "$BASE/ports_now.txt"
             comm -13 "$BASE/ports_master.txt" "$BASE/ports_now.txt" > "$BASE/ports_new.txt"
 
             if [ -s "$BASE/ports_new.txt" ]; then
@@ -96,6 +105,9 @@ jobs:
 
             # KATANA ENDPOINTS
             katana -list "$BASE/alive_now.txt" -silent | grep -Ei "admin|login|api|upload|dashboard|\?" | sort -u > "$BASE/urls_now.txt"
+
+            sort -u "$BASE/urls_master.txt" -o "$BASE/urls_master.txt"
+            sort -u "$BASE/urls_now.txt" -o "$BASE/urls_now.txt"
             comm -13 "$BASE/urls_master.txt" "$BASE/urls_now.txt" > "$BASE/urls_new.txt"
 
             if [ -s "$BASE/urls_new.txt" ]; then
