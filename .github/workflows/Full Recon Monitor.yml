@@ -28,7 +28,7 @@ jobs:
           go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest
           go install github.com/projectdiscovery/asnmap/cmd/asnmap@latest
           # Install gowitness (public sensepost version) via Go
-          go install github.com/sensepost/gowitness/v2/cmd/gowitness@latest
+          go install github.com/sensepost/gowitness/cmd/gowitness@latest
           echo "$HOME/go/bin" >> $GITHUB_PATH
 
       - name: Full Recon + Alerts
