@@ -17,6 +17,7 @@ jobs:
         run: |
           sudo apt update
           sudo apt install -y jq nmap libpcap-dev
+
           go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest
           go install github.com/tomnomnom/assetfinder@latest
           go install github.com/projectdiscovery/httpx/cmd/httpx@latest
@@ -27,8 +28,10 @@ jobs:
           go install github.com/tomnomnom/waybackurls@latest
           go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest
           go install github.com/projectdiscovery/asnmap/cmd/asnmap@latest
-          # Install gowitness (pinned v2 release) for screenshots
-          go install github.com/sensepost/gowitness/v2/cmd/gowitness@v2.5.0
+
+          # FIXED gowitness (no v2 module path bug)
+          go install github.com/sensepost/gowitness/cmd/gowitness@v2.5.0
+
           echo "$HOME/go/bin" >> $GITHUB_PATH
 
       - name: Full Recon + Alerts
@@ -61,7 +64,13 @@ jobs:
 
             if [ ! -f "$OLD" ]; then
               cp "$NEW" "$OLD"
-              send_msg "[$TAG] Recon Update: $DOMAIN\n\nChange Type: $TYPE\nDetected At: $(date -u)\n\nNew Findings:\n$(cat "$NEW")"
+              send_msg "[$TAG] Recon Update: $DOMAIN
+
+Change Type: $TYPE
+Detected At: $(date -u)
+
+New Findings:
+$(cat "$NEW")"
               return
             fi
 
@@ -71,7 +80,13 @@ jobs:
             echo "$DIFF" > "$BASE/snapshots/$YEAR/${TYPE}_$(date +%H%M).txt"
             cat "$NEW" >> "$OLD"
 
-            send_msg "[$TAG] Recon Update: $DOMAIN\n\nChange Type: $TYPE\nDetected At: $(date -u)\n\nNew Findings:\n$DIFF"
+            send_msg "[$TAG] Recon Update: $DOMAIN
+
+Change Type: $TYPE
+Detected At: $(date -u)
+
+New Findings:
+$DIFF"
           }
 
           while read domain; do
@@ -127,9 +142,10 @@ jobs:
             grep -Ei "admin|api|internal|debug|staging" "$BASE/urls_new.txt" | sort -u > "$BASE/dirs_new.txt" || true
             diff_alert "$domain" dirs IMPORTANT "$BASE"
 
-            # 11. Screenshots (only if gowitness is installed)
+            # 11. Screenshots (safe check)
             if command -v gowitness >/dev/null 2>&1 && [ -s "$BASE/live_new.txt" ]; then
-              gowitness scan file -f "$BASE/live_new.txt" --destination "$BASE/screenshots" >/dev/null 2>&1 || true
+              gowitness scan file -f "$BASE/live_new.txt" \
+                --destination "$BASE/screenshots" >/dev/null 2>&1 || true
             fi
 
             # 12. Vulns
@@ -140,5 +156,3 @@ jobs:
             diff_alert "$domain" vulns IMPORTANT "$BASE"
 
           done < targets.txt
-
-
