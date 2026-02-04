@@ -27,9 +27,6 @@ jobs:
           go install github.com/tomnomnom/waybackurls@latest
           go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest
           go install github.com/projectdiscovery/asnmap/cmd/asnmap@latest
-          go install github.com/projectdiscovery/mapcidr/cmd/mapcidr@latest
-          go install github.com/lc/gau/v2/cmd/gau@latest
-          go install github.com/owasp-amass/amass/v4/...@latest
           go install github.com/projectdiscovery/gowitness/cmd/gowitness@latest
           echo "$HOME/go/bin" >> $GITHUB_PATH
 
@@ -42,20 +39,15 @@ jobs:
           mkdir -p data
 
           notify () {
-            TYPE=$1
-            DOMAIN=$2
-            DIFF=$3
-            TAG=$4
-
             curl -s -X POST "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendMessage" \
               -d chat_id="$TELEGRAM_CHAT_ID" \
-              -d text="[$TAG] Recon Update: $DOMAIN
+              -d text="[$4] Recon Update: $2
 
-Change Type: $TYPE
+Change Type: $1
 Detected At: $(date -u)
 
 New Findings:
-$DIFF" > /dev/null
+$3" > /dev/null
           }
 
           diff_and_alert () {
@@ -67,86 +59,87 @@ $DIFF" > /dev/null
             OLD="$BASE/baseline/$ITEM.txt"
             NEW="$BASE/${ITEM}_new.txt"
 
-            [ ! -f "$NEW" ] && return
+            [ ! -s "$NEW" ] && return
+
+            mkdir -p "$BASE/baseline" "$BASE/snapshots/$YEAR"
 
             if [ ! -f "$OLD" ]; then
-              mv "$NEW" "$OLD"
-              notify $ITEM $DOMAIN "$(cat $OLD)" "$TAG"
+              cp "$NEW" "$OLD"
+              notify "$ITEM" "$DOMAIN" "$(cat $NEW)" "$TAG"
               return
             fi
 
             DIFF=$(comm -13 <(sort "$OLD") <(sort "$NEW"))
-            if [ ! -z "$DIFF" ]; then
-              SNAP="$BASE/snapshots/$YEAR/${ITEM}_$(date +%H%M).txt"
-              echo "$DIFF" > "$SNAP"
+            if [ -n "$DIFF" ]; then
+              echo "$DIFF" > "$BASE/snapshots/$YEAR/${ITEM}_$(date +%H%M).txt"
               cat "$NEW" >> "$OLD"
-
-              notify $ITEM $DOMAIN "$DIFF" "$TAG"
+              notify "$ITEM" "$DOMAIN" "$DIFF" "$TAG"
             fi
-
-            rm -f "$NEW"
           }
 
           while read domain; do
             BASE="data/$domain"
-            mkdir -p $BASE/baseline $BASE/snapshots/$YEAR $BASE/screenshots
+            mkdir -p "$BASE"
 
-            # ------------------------------
             # 1. Subdomains
-            subfinder -d $domain -silent | assetfinder --subs-only | sort -u > $BASE/sub_new.txt
-            diff_and_alert $domain sub $BASE INFO
+            subfinder -d "$domain" -silent | assetfinder --subs-only | sort -u > "$BASE/sub_new.txt"
+            diff_and_alert "$domain" sub "$BASE" INFO
 
-            # 2. DNS + TLS
-            dnsx -l $BASE/baseline/sub.txt -silent > $BASE/dns_new.txt
-            tlsx -l $BASE/baseline/sub.txt -silent > $BASE/tls_new.txt
-            diff_and_alert $domain dns $BASE INFO
-            diff_and_alert $domain tls $BASE INFO
+            # 2. DNS + TLS (use NEW subdomains)
+            dnsx -l "$BASE/sub_new.txt" -silent > "$BASE/dns_new.txt"
+            tlsx -l "$BASE/sub_new.txt" -silent > "$BASE/tls_new.txt"
+            diff_and_alert "$domain" dns "$BASE" INFO
+            diff_and_alert "$domain" tls "$BASE" INFO
 
             # 3. Live Hosts
-            httpx -l $BASE/baseline/sub.txt -silent > $BASE/live_new.txt
-            diff_and_alert $domain live $BASE IMPORTANT
+            httpx -l "$BASE/sub_new.txt" -silent > "$BASE/live_new.txt"
+            diff_and_alert "$domain" live "$BASE" IMPORTANT
 
             # 4. IP + ASN
-            dnsx -l $BASE/baseline/live.txt -resp-only | sort -u > $BASE/ips_new.txt
-            asnmap -i $BASE/ips_new.txt -silent > $BASE/asn_new.txt
-            diff_and_alert $domain ips $BASE INFO
-            diff_and_alert $domain asn $BASE INFO
+            dnsx -l "$BASE/live_new.txt" -resp-only | sort -u > "$BASE/ips_new.txt"
+            if [ -s "$BASE/ips_new.txt" ]; then
+              asnmap -i "$BASE/ips_new.txt" -silent > "$BASE/asn_new.txt"
+              diff_and_alert "$domain" asn "$BASE" INFO
+            fi
+            diff_and_alert "$domain" ips "$BASE" INFO
 
             # 5. Ports
-            naabu -list $BASE/baseline/live.txt -top-ports 1000 -silent > $BASE/ports_new.txt
-            diff_and_alert $domain ports $BASE IMPORTANT
+            naabu -list "$BASE/live_new.txt" -top-ports 1000 -silent > "$BASE/ports_new.txt"
+            diff_and_alert "$domain" ports "$BASE" IMPORTANT
 
-            # 6. Tech Stack
-            httpx -l $BASE/baseline/live.txt -tech-detect -silent > $BASE/tech_new.txt
-            diff_and_alert $domain tech $BASE INFO
+            # 6. Tech
+            httpx -l "$BASE/live_new.txt" -tech-detect -silent > "$BASE/tech_new.txt"
+            diff_and_alert "$domain" tech "$BASE" INFO
 
             # 7. URLs
-            katana -list $BASE/baseline/live.txt -silent > $BASE/urls_new.txt
-            waybackurls $domain >> $BASE/urls_new.txt
-            sort -u $BASE/urls_new.txt -o $BASE/urls_new.txt
-            diff_and_alert $domain urls $BASE INFO
+            katana -list "$BASE/live_new.txt" -silent > "$BASE/urls_new.txt"
+            waybackurls "$domain" >> "$BASE/urls_new.txt"
+            sort -u "$BASE/urls_new.txt" -o "$BASE/urls_new.txt"
+            diff_and_alert "$domain" urls "$BASE" INFO
 
             # 8. JS Files
-            grep -iE "\.js($|\?)" $BASE/baseline/urls.txt | sort -u > $BASE/jsfiles_new.txt
-            diff_and_alert $domain jsfiles $BASE INFO
+            grep -iE "\.js($|\?)" "$BASE/urls_new.txt" | sort -u > "$BASE/jsfiles_new.txt" || true
+            diff_and_alert "$domain" jsfiles "$BASE" INFO
 
-            # 9. Parameters
-            grep "=" $BASE/baseline/urls.txt | sort -u > $BASE/params_new.txt
-            diff_and_alert $domain params $BASE INFO
+            # 9. Params
+            grep "=" "$BASE/urls_new.txt" | sort -u > "$BASE/params_new.txt" || true
+            diff_and_alert "$domain" params "$BASE" INFO
 
-            # 10. Directories / Admin Paths
-            # Example: filter common keywords
-            grep -Ei "admin|api|internal|debug|staging" $BASE/baseline/urls.txt | sort -u > $BASE/dirs_new.txt
-            diff_and_alert $domain dirs $BASE IMPORTANT
+            # 10. Admin / API Paths
+            grep -Ei "admin|api|internal|debug|staging" "$BASE/urls_new.txt" | sort -u > "$BASE/dirs_new.txt" || true
+            diff_and_alert "$domain" dirs "$BASE" IMPORTANT
 
-            # 11. Screenshots
-            gowitness scan file -f $BASE/baseline/live.txt --destination $BASE/screenshots >/dev/null 2>&1
+            # 11. Screenshots (safe)
+            if [ -s "$BASE/live_new.txt" ]; then
+              gowitness scan file -f "$BASE/live_new.txt" --destination "$BASE/screenshots" >/dev/null 2>&1
+            fi
 
             # 12. Vulnerabilities
-            nuclei -l $BASE/baseline/live.txt \
+            nuclei -l "$BASE/live_new.txt" \
               -severity medium,high,critical \
               -tags cve,exposed,misconfig \
-              -silent > $BASE/vulns_new.txt || true
-            diff_and_alert $domain vulns $BASE IMPORTANT
+              -silent > "$BASE/vulns_new.txt" || true
+            diff_and_alert "$domain" vulns "$BASE" IMPORTANT
 
           done < targets.txt
+
