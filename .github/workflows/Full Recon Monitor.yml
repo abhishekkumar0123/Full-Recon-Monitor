@@ -19,12 +19,7 @@ jobs:
           set -euxo pipefail
           sudo apt update
           sudo apt install -y jq nmap libpcap-dev curl unzip
-          export PATH="$PATH:$HOME/go/bin"
           echo "$HOME/go/bin" >> $GITHUB_PATH
-          go env -w GOPROXY=https://proxy.golang.org,direct
-          go env -w GOSUMDB=sum.golang.org
-          go env -w GO111MODULE=on
-          go clean -modcache
           go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest
           go install github.com/projectdiscovery/httpx/cmd/httpx@latest
           go install github.com/projectdiscovery/naabu/v2/cmd/naabu@latest
@@ -33,127 +28,84 @@ jobs:
           go install github.com/tomnomnom/assetfinder@latest
           go install github.com/sensepost/gowitness@latest
 
-      - name: Full Recon + Signal Alerts
+      - name: Full Recon + Telegram Alerts
         shell: bash
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          set +e
+          set -euxo pipefail
           mkdir -p data
           [ -f targets.txt ] || exit 0
 
           send_msg() {
-            if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then
-              curl -s "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendMessage" \
-                --data-urlencode "chat_id=$TELEGRAM_CHAT_ID" \
-                --data-urlencode "text=$1" >/dev/null || true
-            fi
+            curl -s "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendMessage" \
+              --data-urlencode "chat_id=$TELEGRAM_CHAT_ID" \
+              --data-urlencode "text=$1" >/dev/null || true
           }
 
-          while IFS= read -r domain || [ -n "$domain" ]; do
-            domain="$(echo "$domain" | xargs)"
+          while read -r domain; do
             [ -z "$domain" ] && continue
-
             BASE="data/$domain"
             mkdir -p "$BASE/screenshots"
+            touch "$BASE"/{alive_master.txt,nuclei_master.txt,ports_master.txt,urls_master.txt}
 
-            touch \
-              "$BASE/alive_master.txt" \
-              "$BASE/nuclei_master.txt" \
-              "$BASE/ports_master.txt" \
-              "$BASE/urls_master.txt"
-
-            # ---------------- SUBDOMAINS → ALIVE ----------------
-            subfinder -d "$domain" -silent \
-              | assetfinder --subs-only \
-              | sort -u > "$BASE/subs_raw.txt"
-
-            httpx -l "$BASE/subs_raw.txt" -silent > "$BASE/alive_now.txt"
-
-            sort -u "$BASE/alive_now.txt" -o "$BASE/alive_now.txt"
-            sort -u "$BASE/alive_master.txt" -o "$BASE/alive_master.txt"
-
+            # ALIVE SUBDOMAINS
+            subfinder -d "$domain" -silent | assetfinder --subs-only | sort -u > "$BASE/subs.txt"
+            httpx -l "$BASE/subs.txt" -silent > "$BASE/alive_now.txt"
             comm -13 "$BASE/alive_master.txt" "$BASE/alive_now.txt" > "$BASE/alive_new.txt"
 
             if [ -s "$BASE/alive_new.txt" ]; then
               ALIVE_COUNT=$(wc -l < "$BASE/alive_new.txt")
-              ALIVE_LIST=$(cat "$BASE/alive_new.txt")
+              ALIVE_LIST=$(head -n 50 "$BASE/alive_new.txt")
 
-              MSG="🆕 [NEW ALIVE HOSTS]
-Target: $domain
-Count: $ALIVE_COUNT
-Detected At: $(date -u)
-
-$ALIVE_LIST"
+              MSG=$(printf "🆕 [NEW ALIVE HOSTS]\nTarget: %s\nCount: %s\nDetected At: %s\n\n%s" \
+                "$domain" "$ALIVE_COUNT" "$(date -u)" "$ALIVE_LIST")
 
               send_msg "$MSG"
               cat "$BASE/alive_new.txt" >> "$BASE/alive_master.txt"
             fi
 
-            # ---------------- NUCLEI ----------------
-            nuclei -l "$BASE/alive_now.txt" -silent -severity low,medium,high,critical \
-              | sort -u > "$BASE/nuclei_now.txt"
-
+            # NUCLEI
+            nuclei -l "$BASE/alive_now.txt" -silent | sort -u > "$BASE/nuclei_now.txt"
             comm -13 "$BASE/nuclei_master.txt" "$BASE/nuclei_now.txt" > "$BASE/nuclei_new.txt"
 
             if [ -s "$BASE/nuclei_new.txt" ]; then
-              NUCLEI_COUNT=$(wc -l < "$BASE/nuclei_new.txt")
               NUCLEI_LIST=$(head -n 10 "$BASE/nuclei_new.txt")
 
-              MSG="🚨 [NUCLEI FINDINGS]
-Target: $domain
-New Issues: $NUCLEI_COUNT
-Detected At: $(date -u)
-
-$NUCLEI_LIST"
+              MSG=$(printf "🚨 [NUCLEI FINDINGS]\nTarget: %s\nDetected At: %s\n\n%s" \
+                "$domain" "$(date -u)" "$NUCLEI_LIST")
 
               send_msg "$MSG"
               cat "$BASE/nuclei_new.txt" >> "$BASE/nuclei_master.txt"
             fi
 
-            # ---------------- NAABU ----------------
+            # PORTS
             naabu -list "$BASE/alive_now.txt" -silent > "$BASE/ports_now.txt"
-
             comm -13 "$BASE/ports_master.txt" "$BASE/ports_now.txt" > "$BASE/ports_new.txt"
 
             if [ -s "$BASE/ports_new.txt" ]; then
-              PORTS_LIST=$(cat "$BASE/ports_new.txt")
+              PORTS_LIST=$(head -n 20 "$BASE/ports_new.txt")
 
-              MSG="🔓 [NEW OPEN PORTS]
-Target: $domain
-Detected At: $(date -u)
-
-$PORTS_LIST"
+              MSG=$(printf "🔓 [NEW OPEN PORTS]\nTarget: %s\nDetected At: %s\n\n%s" \
+                "$domain" "$(date -u)" "$PORTS_LIST")
 
               send_msg "$MSG"
               cat "$BASE/ports_new.txt" >> "$BASE/ports_master.txt"
             fi
 
-            # ---------------- KATANA (ALL ALIVE SUBDOMAINS) ----------------
-            katana -list "$BASE/alive_now.txt" -silent \
-              | grep -Ei "admin|login|api|upload|dashboard|\?" \
-              | sort -u > "$BASE/urls_now.txt"
-
+            # KATANA ENDPOINTS
+            katana -list "$BASE/alive_now.txt" -silent | grep -Ei "admin|login|api|upload|dashboard|\?" | sort -u > "$BASE/urls_now.txt"
             comm -13 "$BASE/urls_master.txt" "$BASE/urls_now.txt" > "$BASE/urls_new.txt"
 
             if [ -s "$BASE/urls_new.txt" ]; then
-              URLS_LIST=$(head -n 10 "$BASE/urls_new.txt")
+              URLS_LIST=$(head -n 20 "$BASE/urls_new.txt")
 
-              MSG="🆕 [NEW ENDPOINTS]
-Target: $domain
-Detected At: $(date -u)
-
-$URLS_LIST"
+              MSG=$(printf "🆕 [NEW ENDPOINTS]\nTarget: %s\nDetected At: %s\n\n%s" \
+                "$domain" "$(date -u)" "$URLS_LIST")
 
               send_msg "$MSG"
               cat "$BASE/urls_new.txt" >> "$BASE/urls_master.txt"
-            fi
-
-            # ---------------- GOWITNESS (ONLY NEW HOSTS) ----------------
-            if [ -s "$BASE/alive_new.txt" ]; then
-              gowitness scan file -f "$BASE/alive_new.txt" \
-                --destination "$BASE/screenshots" >/dev/null 2>&1 || true
             fi
 
           done < targets.txt
