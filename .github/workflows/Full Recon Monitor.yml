@@ -17,42 +17,23 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-
           sudo apt update
           sudo apt install -y jq nmap libpcap-dev curl unzip
-
           export PATH="$PATH:$HOME/go/bin"
           echo "$HOME/go/bin" >> $GITHUB_PATH
-
-          # Go env (checksum error fix)
           go env -w GOPROXY=https://proxy.golang.org,direct
           go env -w GOSUMDB=sum.golang.org
           go env -w GO111MODULE=on
           go clean -modcache
-
-          # ProjectDiscovery tools
           go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest
           go install github.com/projectdiscovery/httpx/cmd/httpx@latest
-          go install github.com/projectdiscovery/dnsx/cmd/dnsx@latest
-          go install github.com/projectdiscovery/tlsx/cmd/tlsx@latest
           go install github.com/projectdiscovery/naabu/v2/cmd/naabu@latest
           go install github.com/projectdiscovery/katana/cmd/katana@latest
           go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest
-          go install github.com/projectdiscovery/asnmap/cmd/asnmap@latest
-
-          # Tomnomnom tools
           go install github.com/tomnomnom/assetfinder@latest
-          go install github.com/tomnomnom/waybackurls@latest
-
-          # GoWitness
           go install github.com/sensepost/gowitness@latest
 
-          # sanity checks
-          subfinder -h >/dev/null
-          katana -h >/dev/null
-          gowitness --help >/dev/null
-
-      - name: Full Recon + Alerts
+      - name: Full Recon + Signal Alerts
         shell: bash
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -60,8 +41,6 @@ jobs:
         run: |
           set +e
           mkdir -p data
-
-          # exit safely if no targets
           [ -f targets.txt ] || exit 0
 
           send_msg() {
@@ -79,20 +58,102 @@ jobs:
             BASE="data/$domain"
             mkdir -p "$BASE/screenshots"
 
+            touch \
+              "$BASE/alive_master.txt" \
+              "$BASE/nuclei_master.txt" \
+              "$BASE/ports_master.txt" \
+              "$BASE/urls_master.txt"
+
+            # ---------------- SUBDOMAINS → ALIVE ----------------
             subfinder -d "$domain" -silent \
               | assetfinder --subs-only \
-              | sort -u > "$BASE/subs.txt"
+              | sort -u > "$BASE/subs_raw.txt"
 
-            if [ -s "$BASE/subs.txt" ]; then
-              httpx -l "$BASE/subs.txt" -silent > "$BASE/live.txt"
+            httpx -l "$BASE/subs_raw.txt" -silent > "$BASE/alive_now.txt"
+
+            sort -u "$BASE/alive_now.txt" -o "$BASE/alive_now.txt"
+            sort -u "$BASE/alive_master.txt" -o "$BASE/alive_master.txt"
+
+            comm -13 "$BASE/alive_master.txt" "$BASE/alive_now.txt" > "$BASE/alive_new.txt"
+
+            if [ -s "$BASE/alive_new.txt" ]; then
+              ALIVE_COUNT=$(wc -l < "$BASE/alive_new.txt")
+              ALIVE_LIST=$(cat "$BASE/alive_new.txt")
+
+              MSG="🆕 [NEW ALIVE HOSTS]
+Target: $domain
+Count: $ALIVE_COUNT
+Detected At: $(date -u)
+
+$ALIVE_LIST"
+
+              send_msg "$MSG"
+              cat "$BASE/alive_new.txt" >> "$BASE/alive_master.txt"
             fi
 
-            if command -v gowitness >/dev/null && [ -s "$BASE/live.txt" ]; then
-              gowitness scan file \
-                -f "$BASE/live.txt" \
-                --destination "$BASE/screenshots" \
-                >/dev/null 2>&1 || true
+            # ---------------- NUCLEI ----------------
+            nuclei -l "$BASE/alive_now.txt" -silent -severity low,medium,high,critical \
+              | sort -u > "$BASE/nuclei_now.txt"
+
+            comm -13 "$BASE/nuclei_master.txt" "$BASE/nuclei_now.txt" > "$BASE/nuclei_new.txt"
+
+            if [ -s "$BASE/nuclei_new.txt" ]; then
+              NUCLEI_COUNT=$(wc -l < "$BASE/nuclei_new.txt")
+              NUCLEI_LIST=$(head -n 10 "$BASE/nuclei_new.txt")
+
+              MSG="🚨 [NUCLEI FINDINGS]
+Target: $domain
+New Issues: $NUCLEI_COUNT
+Detected At: $(date -u)
+
+$NUCLEI_LIST"
+
+              send_msg "$MSG"
+              cat "$BASE/nuclei_new.txt" >> "$BASE/nuclei_master.txt"
             fi
 
-            send_msg "✅ Recon done for $domain at $(date -u)"
+            # ---------------- NAABU ----------------
+            naabu -list "$BASE/alive_now.txt" -silent > "$BASE/ports_now.txt"
+
+            comm -13 "$BASE/ports_master.txt" "$BASE/ports_now.txt" > "$BASE/ports_new.txt"
+
+            if [ -s "$BASE/ports_new.txt" ]; then
+              PORTS_LIST=$(cat "$BASE/ports_new.txt")
+
+              MSG="🔓 [NEW OPEN PORTS]
+Target: $domain
+Detected At: $(date -u)
+
+$PORTS_LIST"
+
+              send_msg "$MSG"
+              cat "$BASE/ports_new.txt" >> "$BASE/ports_master.txt"
+            fi
+
+            # ---------------- KATANA (ALL ALIVE SUBDOMAINS) ----------------
+            katana -list "$BASE/alive_now.txt" -silent \
+              | grep -Ei "admin|login|api|upload|dashboard|\?" \
+              | sort -u > "$BASE/urls_now.txt"
+
+            comm -13 "$BASE/urls_master.txt" "$BASE/urls_now.txt" > "$BASE/urls_new.txt"
+
+            if [ -s "$BASE/urls_new.txt" ]; then
+              URLS_LIST=$(head -n 10 "$BASE/urls_new.txt")
+
+              MSG="🆕 [NEW ENDPOINTS]
+Target: $domain
+Detected At: $(date -u)
+
+$URLS_LIST"
+
+              send_msg "$MSG"
+              cat "$BASE/urls_new.txt" >> "$BASE/urls_master.txt"
+            fi
+
+            # ---------------- GOWITNESS (ONLY NEW HOSTS) ----------------
+            if [ -s "$BASE/alive_new.txt" ]; then
+              gowitness scan file -f "$BASE/alive_new.txt" \
+                --destination "$BASE/screenshots" >/dev/null 2>&1 || true
+            fi
+
           done < targets.txt
