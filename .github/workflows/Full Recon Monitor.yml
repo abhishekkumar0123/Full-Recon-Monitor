@@ -21,16 +21,16 @@ jobs:
           sudo apt update
           sudo apt install -y jq nmap libpcap-dev curl unzip
 
-          # Go env hardening
-          export GOPROXY=direct
-          export GOSUMDB=sum.golang.org
           export PATH="$PATH:$HOME/go/bin"
-
           echo "$HOME/go/bin" >> $GITHUB_PATH
 
-          # --------------------
-          # ProjectDiscovery tools (CORRECT CMD PATHS)
-          # --------------------
+          # Go env (checksum error fix)
+          go env -w GOPROXY=https://proxy.golang.org,direct
+          go env -w GOSUMDB=sum.golang.org
+          go env -w GO111MODULE=on
+          go clean -modcache
+
+          # ProjectDiscovery tools
           go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest
           go install github.com/projectdiscovery/httpx/cmd/httpx@latest
           go install github.com/projectdiscovery/dnsx/cmd/dnsx@latest
@@ -40,18 +40,14 @@ jobs:
           go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest
           go install github.com/projectdiscovery/asnmap/cmd/asnmap@latest
 
-          # --------------------
           # Tomnomnom tools
-          # --------------------
           go install github.com/tomnomnom/assetfinder@latest
           go install github.com/tomnomnom/waybackurls@latest
 
-          # --------------------
-          # GoWitness (GO INSTALL ONLY)
-          # --------------------
+          # GoWitness
           go install github.com/sensepost/gowitness@latest
 
-          # sanity
+          # sanity checks
           subfinder -h >/dev/null
           katana -h >/dev/null
           gowitness --help >/dev/null
@@ -65,13 +61,19 @@ jobs:
           set +e
           mkdir -p data
 
+          # exit safely if no targets
+          [ -f targets.txt ] || exit 0
+
           send_msg() {
-            curl -s "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendMessage" \
-              --data-urlencode "chat_id=$TELEGRAM_CHAT_ID" \
-              --data-urlencode "text=$1" >/dev/null
+            if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then
+              curl -s "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendMessage" \
+                --data-urlencode "chat_id=$TELEGRAM_CHAT_ID" \
+                --data-urlencode "text=$1" >/dev/null || true
+            fi
           }
 
           while IFS= read -r domain || [ -n "$domain" ]; do
+            domain="$(echo "$domain" | xargs)"
             [ -z "$domain" ] && continue
 
             BASE="data/$domain"
@@ -81,14 +83,16 @@ jobs:
               | assetfinder --subs-only \
               | sort -u > "$BASE/subs.txt"
 
-            httpx -l "$BASE/subs.txt" -silent > "$BASE/live.txt"
+            if [ -s "$BASE/subs.txt" ]; then
+              httpx -l "$BASE/subs.txt" -silent > "$BASE/live.txt"
+            fi
 
             if command -v gowitness >/dev/null && [ -s "$BASE/live.txt" ]; then
               gowitness scan file \
                 -f "$BASE/live.txt" \
                 --destination "$BASE/screenshots" \
-                >/dev/null 2>&1
+                >/dev/null 2>&1 || true
             fi
 
-            send_msg "[OK] Recon done for $domain at $(date -u)"
+            send_msg "✅ Recon done for $domain at $(date -u)"
           done < targets.txt
