@@ -16,12 +16,12 @@ jobs:
       - name: Install Tools
         shell: bash
         run: |
-          set -e
+          set -euxo pipefail
 
           sudo apt update
-          sudo apt install -y jq nmap libpcap-dev curl tar
+          sudo apt install -y jq nmap libpcap-dev curl tar unzip
 
-          # Go-based tools (stable)
+          # Go tools
           go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest
           go install github.com/tomnomnom/assetfinder@latest
           go install github.com/projectdiscovery/httpx/cmd/httpx@latest
@@ -33,13 +33,19 @@ jobs:
           go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest
           go install github.com/projectdiscovery/asnmap/cmd/asnmap@latest
 
-          # Gowitness — OFFICIAL TAR.GZ BINARY (WORKING)
-          curl -L https://github.com/sensepost/gowitness/releases/latest/download/gowitness-linux-amd64.tar.gz \
-            | tar -xz
+          # Add Go bin to PATH
+          echo "$HOME/go/bin" >> $GITHUB_PATH
+          export PATH="$PATH:$HOME/go/bin"
+
+          # GoWitness (PINNED VERSION – NO GZIP ERROR)
+          GOWITNESS_VER="2.5.1"
+          curl -L -o gowitness.tar.gz \
+            https://github.com/sensepost/gowitness/releases/download/${GOWITNESS_VER}/gowitness-linux-amd64.tar.gz
+
+          file gowitness.tar.gz
+          tar -xzf gowitness.tar.gz
           chmod +x gowitness
           sudo mv gowitness /usr/local/bin/
-
-          echo "$HOME/go/bin" >> "$GITHUB_PATH"
 
       - name: Full Recon + Alerts
         shell: bash
@@ -48,6 +54,7 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           set +e
+
           mkdir -p data
 
           send_msg() {
@@ -66,9 +73,11 @@ jobs:
             httpx -l "$BASE/subs.txt" -silent > "$BASE/live.txt"
 
             if command -v gowitness >/dev/null && [ -s "$BASE/live.txt" ]; then
-              gowitness scan file -f "$BASE/live.txt" --destination "$BASE/screenshots" >/dev/null 2>&1
+              gowitness scan file \
+                -f "$BASE/live.txt" \
+                --destination "$BASE/screenshots" \
+                >/dev/null 2>&1
             fi
 
-            send_msg "[INFO] Recon done for $domain at $(date -u)"
-
+            send_msg "[OK] Recon done for $domain at $(date -u)"
           done < targets.txt
