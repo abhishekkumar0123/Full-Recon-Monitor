@@ -27,7 +27,9 @@ jobs:
           go install github.com/tomnomnom/waybackurls@latest
           go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest
           go install github.com/projectdiscovery/asnmap/cmd/asnmap@latest
-          go install github.com/projectdiscovery/gowitness/cmd/gowitness@latest
+          # Install gowitness from prebuilt binary for reliable screenshots
+          wget -q https://github.com/sensepost/gowitness/releases/download/2.5.2/gowitness-2.5.2-linux-amd64 -O /usr/local/bin/gowitness
+          chmod +x /usr/local/bin/gowitness
           echo "$HOME/go/bin" >> $GITHUB_PATH
 
       - name: Full Recon + Alerts
@@ -126,9 +128,9 @@ jobs:
             grep -Ei "admin|api|internal|debug|staging" "$BASE/urls_new.txt" | sort -u > "$BASE/dirs_new.txt" || true
             diff_alert "$domain" dirs IMPORTANT "$BASE"
 
-            # 11. Screenshots
-            if [ -s "$BASE/live_new.txt" ]; then
-              gowitness scan file -f "$BASE/live_new.txt" --destination "$BASE/screenshots" >/dev/null 2>&1
+            # 11. Screenshots (only if gowitness is installed)
+            if command -v gowitness >/dev/null 2>&1 && [ -s "$BASE/live_new.txt" ]; then
+              gowitness scan file -f "$BASE/live_new.txt" --destination "$BASE/screenshots" >/dev/null 2>&1 || true
             fi
 
             # 12. Vulns
