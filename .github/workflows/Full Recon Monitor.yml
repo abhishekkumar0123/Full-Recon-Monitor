@@ -19,9 +19,9 @@ jobs:
           set -e
 
           sudo apt update
-          sudo apt install -y jq nmap libpcap-dev unzip curl
+          sudo apt install -y jq nmap libpcap-dev curl tar
 
-          # Go tools
+          # Go-based tools (stable)
           go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest
           go install github.com/tomnomnom/assetfinder@latest
           go install github.com/projectdiscovery/httpx/cmd/httpx@latest
@@ -33,9 +33,9 @@ jobs:
           go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest
           go install github.com/projectdiscovery/asnmap/cmd/asnmap@latest
 
-          # Gowitness — PREBUILT BINARY (NO GO MODULE)
-          curl -L -o gowitness.zip https://github.com/sensepost/gowitness/releases/latest/download/gowitness-linux-amd64.zip
-          unzip gowitness.zip
+          # Gowitness — OFFICIAL TAR.GZ BINARY (WORKING)
+          curl -L https://github.com/sensepost/gowitness/releases/latest/download/gowitness-linux-amd64.tar.gz \
+            | tar -xz
           chmod +x gowitness
           sudo mv gowitness /usr/local/bin/
 
@@ -48,7 +48,6 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           set +e
-          YEAR=$(date +%Y)
           mkdir -p data
 
           send_msg() {
@@ -57,44 +56,19 @@ jobs:
               --data-urlencode "text=$1" >/dev/null
           }
 
-          diff_alert() {
-            DOMAIN="$1"; TYPE="$2"; TAG="$3"; BASE="$4"
-            NEW="$BASE/${TYPE}_new.txt"
-            OLD="$BASE/baseline/${TYPE}.txt"
-
-            [ ! -s "$NEW" ] && return
-            mkdir -p "$BASE/baseline" "$BASE/snapshots/$YEAR"
-
-            if [ ! -f "$OLD" ]; then
-              cp "$NEW" "$OLD"
-              send_msg "[$TAG] $DOMAIN | $TYPE\n$(date -u)\n\n$(cat "$NEW")"
-              return
-            fi
-
-            sort -u "$OLD" > /tmp/old.txt
-            sort -u "$NEW" > /tmp/new.txt
-            DIFF=$(grep -Fxv -f /tmp/old.txt /tmp/new.txt || true)
-            [ -z "$DIFF" ] && return
-
-            echo "$DIFF" > "$BASE/snapshots/$YEAR/${TYPE}_$(date +%H%M).txt"
-            cat /tmp/new.txt >> "$OLD"
-            send_msg "[$TAG] $DOMAIN | $TYPE\n$(date -u)\n\n$DIFF"
-          }
-
           while IFS= read -r domain || [ -n "$domain" ]; do
             [ -z "$domain" ] && continue
+
             BASE="data/$domain"
             mkdir -p "$BASE/screenshots"
 
-            subfinder -d "$domain" -silent | assetfinder --subs-only | sort -u > "$BASE/sub_new.txt"
-            diff_alert "$domain" sub INFO "$BASE"
+            subfinder -d "$domain" -silent | assetfinder --subs-only | sort -u > "$BASE/subs.txt"
+            httpx -l "$BASE/subs.txt" -silent > "$BASE/live.txt"
 
-            httpx -l "$BASE/sub_new.txt" -silent > "$BASE/live_new.txt"
-            diff_alert "$domain" live IMPORTANT "$BASE"
-
-            if command -v gowitness >/dev/null && [ -s "$BASE/live_new.txt" ]; then
-              gowitness scan file -f "$BASE/live_new.txt" --destination "$BASE/screenshots" >/dev/null 2>&1
+            if command -v gowitness >/dev/null && [ -s "$BASE/live.txt" ]; then
+              gowitness scan file -f "$BASE/live.txt" --destination "$BASE/screenshots" >/dev/null 2>&1
             fi
 
-          done < targets.txt
+            send_msg "[INFO] Recon done for $domain at $(date -u)"
 
+          done < targets.txt
