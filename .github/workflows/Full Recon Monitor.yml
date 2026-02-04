@@ -1,4 +1,4 @@
-name: BugBounty Full Recon Monitor
+name: Full Recon Monitor
 
 on:
   schedule:
