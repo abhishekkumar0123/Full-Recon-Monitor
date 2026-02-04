@@ -27,9 +27,8 @@ jobs:
           go install github.com/tomnomnom/waybackurls@latest
           go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest
           go install github.com/projectdiscovery/asnmap/cmd/asnmap@latest
-          # Install gowitness from prebuilt binary for reliable screenshots
-          wget -q https://github.com/sensepost/gowitness/releases/download/2.5.2/gowitness-2.5.2-linux-amd64 -O /usr/local/bin/gowitness
-          chmod +x /usr/local/bin/gowitness
+          # Install gowitness (public sensepost version) via Go
+          go install github.com/sensepost/gowitness/v2/cmd/gowitness@latest
           echo "$HOME/go/bin" >> $GITHUB_PATH
 
       - name: Full Recon + Alerts
