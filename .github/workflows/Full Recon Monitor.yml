@@ -60,13 +60,7 @@ jobs:
 
             if [ ! -f "$OLD" ]; then
               cp "$NEW" "$OLD"
-              send_msg "[$TAG] Recon Update: $DOMAIN
-
-Change Type: $TYPE
-Detected At: $(date -u)
-
-New Findings:
-$(cat "$NEW")"
+              send_msg "[$TAG] Recon Update: $DOMAIN\n\nChange Type: $TYPE\nDetected At: $(date -u)\n\nNew Findings:\n$(cat "$NEW")"
               return
             fi
 
@@ -76,13 +70,7 @@ $(cat "$NEW")"
             echo "$DIFF" > "$BASE/snapshots/$YEAR/${TYPE}_$(date +%H%M).txt"
             cat "$NEW" >> "$OLD"
 
-            send_msg "[$TAG] Recon Update: $DOMAIN
-
-Change Type: $TYPE
-Detected At: $(date -u)
-
-New Findings:
-$DIFF"
+            send_msg "[$TAG] Recon Update: $DOMAIN\n\nChange Type: $TYPE\nDetected At: $(date -u)\n\nNew Findings:\n$DIFF"
           }
 
           while read domain; do
