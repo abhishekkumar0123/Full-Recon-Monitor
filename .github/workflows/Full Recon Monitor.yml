@@ -10,10 +10,12 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout repo
         uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+          fetch-depth: 0
 
-      # ---------------- CACHE (FASTER RUNS)
       - name: Cache Go
         uses: actions/cache@v4
         with:
@@ -27,6 +29,7 @@ jobs:
           sudo apt update
           sudo apt install -y jq nmap libpcap-dev curl unzip
           echo "$HOME/go/bin" >> $GITHUB_PATH
+
           go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest
           go install github.com/projectdiscovery/httpx/cmd/httpx@latest
           go install github.com/projectdiscovery/naabu/v2/cmd/naabu@latest
@@ -34,20 +37,13 @@ jobs:
           go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest
           go install github.com/tomnomnom/assetfinder@latest
 
-      - name: Full Recon + Telegram Alerts + Infra Monitoring
+      - name: Full Recon
         shell: bash
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           set -euxo pipefail
-          
-          # Make sure 'data' and all subdirectories are created
-          echo "Creating necessary directories..."
+
           mkdir -p data/{alive,ports,urls,nuclei,httpx,meta}/history
 
-          # Create the files that need to be present
-          echo "Creating necessary files..."
           touch \
             data/alive/alive_master.txt \
             data/nuclei/nuclei_master.txt \
@@ -59,73 +55,39 @@ jobs:
             data/meta/tls_master.txt \
             data/meta/cdn_master.txt
 
-          # ---------------- ALIVE HOSTS
-          echo "Running subfinder and assetfinder..."
           subfinder -d example.com -silent | assetfinder --subs-only | sort -u > data/alive/subs.txt
-
-          echo "Running httpx..."
           httpx -l data/alive/subs.txt -silent -tech-detect -json > data/httpx/tech_now.json
 
-          echo "Running jq to extract alive hosts..."
           jq -r '.host // empty' data/httpx/tech_now.json | sort -u > data/alive/alive_now.txt
-
-          echo "Comparing with master list and adding new hosts..."
           comm -13 data/alive/alive_master.txt data/alive/alive_now.txt > data/alive/alive_new.txt
-          if [ -s data/alive/alive_new.txt ]; then
-            MSG=$(printf "🆕 *NEW ALIVE HOSTS*\nTarget: `%s`\nTime: `%s`\n\n%s" \
-              "example.com" "$(date -u)" "$(head -n 50 data/alive/alive_new.txt)")
-            echo "$MSG"
-            cat data/alive/alive_new.txt >> data/alive/alive_master.txt
-          fi
+          cat data/alive/alive_new.txt >> data/alive/alive_master.txt || true
 
-          # ---------------- NUCLEI
           nuclei -l data/alive/alive_now.txt -silent | sort -u > data/nuclei/nuclei_now.txt
           comm -13 data/nuclei/nuclei_master.txt data/nuclei/nuclei_now.txt > data/nuclei/nuclei_new.txt
-          if [ -s data/nuclei/nuclei_new.txt ]; then
-            MSG=$(printf "🚨 *NUCLEI FINDINGS*\nTarget: `%s`\nTime: `%s`\n\n%s" \
-              "example.com" "$(date -u)" "$(head -n 10 data/nuclei/nuclei_new.txt)")
-            echo "$MSG"
-            cat data/nuclei/nuclei_new.txt >> data/nuclei/nuclei_master.txt
-          fi
+          cat data/nuclei/nuclei_new.txt >> data/nuclei/nuclei_master.txt || true
 
-          # ---------------- PORTS
           naabu -list data/alive/alive_now.txt -silent | sort -u > data/ports/ports_now.txt
           comm -13 data/ports/ports_master.txt data/ports/ports_now.txt > data/ports/ports_new.txt
-          if [ -s data/ports/ports_new.txt ]; then
-            MSG=$(printf "🔓 *NEW OPEN PORTS*\nTarget: `%s`\nTime: `%s`\n\n%s" \
-              "example.com" "$(date -u)" "$(head -n 20 data/ports/ports_new.txt)")
-            echo "$MSG"
-            cat data/ports/ports_new.txt >> data/ports/ports_master.txt
-          fi
+          cat data/ports/ports_new.txt >> data/ports/ports_master.txt || true
 
-          # ---------------- URLS
-          katana -list data/alive/alive_now.txt -silent | \
-            grep -Ei "admin|login|api|upload|dashboard|\?" | sort -u > data/urls/urls_now.txt
+          katana -list data/alive/alive_now.txt -silent | sort -u > data/urls/urls_now.txt
           comm -13 data/urls/urls_master.txt data/urls/urls_now.txt > data/urls/urls_new.txt
-          if [ -s data/urls/urls_new.txt ]; then
-            MSG=$(printf "🆕 *NEW ENDPOINTS*\nTarget: `%s`\nTime: `%s`\n\n%s" \
-              "example.com" "$(date -u)" "$(head -n 20 data/urls/urls_new.txt)")
-            echo "$MSG"
-            cat data/urls/urls_new.txt >> data/urls/urls_master.txt
-          fi
+          cat data/urls/urls_new.txt >> data/urls/urls_master.txt || true
 
-          # ---------------- INFRA
           jq -r '.ip // empty' data/httpx/tech_now.json | sort -u > data/meta/ips_now.txt
           jq -r '.asn // empty' data/httpx/tech_now.json | sort -u > data/meta/asn_now.txt
           jq -r '.server // empty' data/httpx/tech_now.json | sort -u > data/meta/server_now.txt
           jq -r '.tls // empty' data/httpx/tech_now.json | sort -u > data/meta/tls_now.txt
           jq -r '.cdn // empty' data/httpx/tech_now.json | sort -u > data/meta/cdn_now.txt
 
-          echo "Checking for infrastructure changes..."
-          if ! diff data/meta/asn_master.txt data/meta/asn_now.txt >/dev/null || \
-             ! diff data/meta/server_master.txt data/meta/server_now.txt >/dev/null || \
-             ! diff data/meta/tls_master.txt data/meta/tls_now.txt >/dev/null; then
-            MSG=$(printf "⚙️ *MAJOR INFRA CHANGE*\nTarget: `%s`\nTime: `%s`" \
-              "example.com" "$(date -u)")
-            echo "$MSG"
-          fi
-
-          # Copy new files over to master lists
-          cp data/meta/*_now.txt data/meta/ 2>/dev/null || true
+          cp data/meta/*_now.txt data/meta/
           cp data/httpx/tech_now.json data/httpx/history/$(date -u +%F).json
 
+      - name: Commit & Push Data
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+
+          git add data/
+          git diff --cached --quiet || git commit -m "Recon update $(date -u)"
+          git push
