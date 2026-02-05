@@ -28,7 +28,7 @@ jobs:
           go install github.com/tomnomnom/assetfinder@latest
           go install github.com/sensepost/gowitness@latest
 
-      - name: Full Recon + Telegram Alerts
+      - name: Full Recon + Telegram Alerts + Infra Monitoring
         shell: bash
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -47,77 +47,125 @@ jobs:
           while read -r domain; do
             [ -z "$domain" ] && continue
             BASE="data/$domain"
-            mkdir -p "$BASE/screenshots"
-            touch "$BASE"/{alive_master.txt,nuclei_master.txt,ports_master.txt,urls_master.txt}
+            mkdir -p "$BASE"/{alive,ports,urls,nuclei,httpx,meta}/history
 
+            # -------------------------------
             # ALIVE SUBDOMAINS
-            subfinder -d "$domain" -silent | assetfinder --subs-only | sort -u > "$BASE/subs.txt"
-            httpx -l "$BASE/subs.txt" -silent | sort -u > "$BASE/alive_now.txt"
+            subfinder -d "$domain" -silent | assetfinder --subs-only | sort -u > "$BASE/alive/subs.txt"
+            httpx -l "$BASE/alive/subs.txt" -silent -tech-detect -o "$BASE/httpx/tech_now.json"
 
-            sort -u "$BASE/alive_master.txt" -o "$BASE/alive_master.txt"
-            sort -u "$BASE/alive_now.txt" -o "$BASE/alive_now.txt"
-            comm -13 "$BASE/alive_master.txt" "$BASE/alive_now.txt" > "$BASE/alive_new.txt"
+            jq -r '.host' "$BASE/httpx/tech_now.json" | sort -u > "$BASE/alive/alive_now.txt"
 
-            if [ -s "$BASE/alive_new.txt" ]; then
-              ALIVE_COUNT=$(wc -l < "$BASE/alive_new.txt")
-              ALIVE_LIST=$(head -n 50 "$BASE/alive_new.txt")
+            sort -u "$BASE/alive/alive_master.txt" -o "$BASE/alive/alive_master.txt"
+            sort -u "$BASE/alive/alive_now.txt" -o "$BASE/alive/alive_now.txt"
+            comm -13 "$BASE/alive/alive_master.txt" "$BASE/alive/alive_now.txt" > "$BASE/alive/alive_new.txt"
 
+            if [ -s "$BASE/alive/alive_new.txt" ]; then
+              ALIVE_COUNT=$(wc -l < "$BASE/alive/alive_new.txt")
+              ALIVE_LIST=$(head -n 50 "$BASE/alive/alive_new.txt")
               MSG=$(printf "🆕 [NEW ALIVE HOSTS]\nTarget: %s\nCount: %s\nDetected At: %s\n\n%s" \
                 "$domain" "$ALIVE_COUNT" "$(date -u)" "$ALIVE_LIST")
-
               send_msg "$MSG"
-              cat "$BASE/alive_new.txt" >> "$BASE/alive_master.txt"
+              cat "$BASE/alive/alive_new.txt" >> "$BASE/alive/alive_master.txt"
             fi
 
-            # NUCLEI
-            nuclei -l "$BASE/alive_now.txt" -silent | sort -u > "$BASE/nuclei_now.txt"
-
-            sort -u "$BASE/nuclei_master.txt" -o "$BASE/nuclei_master.txt"
-            sort -u "$BASE/nuclei_now.txt" -o "$BASE/nuclei_now.txt"
-            comm -13 "$BASE/nuclei_master.txt" "$BASE/nuclei_now.txt" > "$BASE/nuclei_new.txt"
-
-            if [ -s "$BASE/nuclei_new.txt" ]; then
-              NUCLEI_LIST=$(head -n 10 "$BASE/nuclei_new.txt")
-
+            # -------------------------------
+            # NUCLEI VULNERABILITIES
+            nuclei -l "$BASE/alive/alive_now.txt" -silent | sort -u > "$BASE/nuclei/nuclei_now.txt"
+            sort -u "$BASE/nuclei/nuclei_master.txt" -o "$BASE/nuclei/nuclei_master.txt"
+            comm -13 "$BASE/nuclei/nuclei_master.txt" "$BASE/nuclei/nuclei_now.txt" > "$BASE/nuclei/nuclei_new.txt"
+            if [ -s "$BASE/nuclei/nuclei_new.txt" ]; then
+              NUCLEI_LIST=$(head -n 10 "$BASE/nuclei/nuclei_new.txt")
               MSG=$(printf "🚨 [NUCLEI FINDINGS]\nTarget: %s\nDetected At: %s\n\n%s" \
                 "$domain" "$(date -u)" "$NUCLEI_LIST")
-
               send_msg "$MSG"
-              cat "$BASE/nuclei_new.txt" >> "$BASE/nuclei_master.txt"
+              cat "$BASE/nuclei/nuclei_new.txt" >> "$BASE/nuclei/nuclei_master.txt"
             fi
 
-            # PORTS
-            naabu -list "$BASE/alive_now.txt" -silent | sort -u > "$BASE/ports_now.txt"
-
-            sort -u "$BASE/ports_master.txt" -o "$BASE/ports_master.txt"
-            sort -u "$BASE/ports_now.txt" -o "$BASE/ports_now.txt"
-            comm -13 "$BASE/ports_master.txt" "$BASE/ports_now.txt" > "$BASE/ports_new.txt"
-
-            if [ -s "$BASE/ports_new.txt" ]; then
-              PORTS_LIST=$(head -n 20 "$BASE/ports_new.txt")
-
+            # -------------------------------
+            # OPEN PORTS
+            naabu -list "$BASE/alive/alive_now.txt" -silent | sort -u > "$BASE/ports/ports_now.txt"
+            sort -u "$BASE/ports/ports_master.txt" -o "$BASE/ports/ports_master.txt"
+            comm -13 "$BASE/ports/ports_master.txt" "$BASE/ports/ports_now.txt" > "$BASE/ports/ports_new.txt"
+            if [ -s "$BASE/ports/ports_new.txt" ]; then
+              PORTS_LIST=$(head -n 20 "$BASE/ports/ports_new.txt")
               MSG=$(printf "🔓 [NEW OPEN PORTS]\nTarget: %s\nDetected At: %s\n\n%s" \
                 "$domain" "$(date -u)" "$PORTS_LIST")
-
               send_msg "$MSG"
-              cat "$BASE/ports_new.txt" >> "$BASE/ports_master.txt"
+              cat "$BASE/ports/ports_new.txt" >> "$BASE/ports/ports_master.txt"
             fi
 
-            # KATANA ENDPOINTS
-            katana -list "$BASE/alive_now.txt" -silent | grep -Ei "admin|login|api|upload|dashboard|\?" | sort -u > "$BASE/urls_now.txt"
-
-            sort -u "$BASE/urls_master.txt" -o "$BASE/urls_master.txt"
-            sort -u "$BASE/urls_now.txt" -o "$BASE/urls_now.txt"
-            comm -13 "$BASE/urls_master.txt" "$BASE/urls_now.txt" > "$BASE/urls_new.txt"
-
-            if [ -s "$BASE/urls_new.txt" ]; then
-              URLS_LIST=$(head -n 20 "$BASE/urls_new.txt")
-
+            # -------------------------------
+            # ENDPOINTS
+            katana -list "$BASE/alive/alive_now.txt" -silent | grep -Ei "admin|login|api|upload|dashboard|\?" | sort -u > "$BASE/urls/urls_now.txt"
+            sort -u "$BASE/urls/urls_master.txt" -o "$BASE/urls/urls_master.txt"
+            comm -13 "$BASE/urls/urls_master.txt" "$BASE/urls/urls_now.txt" > "$BASE/urls/urls_new.txt"
+            if [ -s "$BASE/urls/urls_new.txt" ]; then
+              URLS_LIST=$(head -n 20 "$BASE/urls/urls_new.txt")
               MSG=$(printf "🆕 [NEW ENDPOINTS]\nTarget: %s\nDetected At: %s\n\n%s" \
                 "$domain" "$(date -u)" "$URLS_LIST")
-
               send_msg "$MSG"
-              cat "$BASE/urls_new.txt" >> "$BASE/urls_master.txt"
+              cat "$BASE/urls/urls_new.txt" >> "$BASE/urls/urls_master.txt"
             fi
 
+            # -------------------------------
+            # INFRA MONITORING
+            PREV_IP=$(cat "$BASE/meta/ips_master.txt" 2>/dev/null || echo "")
+            PREV_ASN=$(cat "$BASE/meta/asn_master.txt" 2>/dev/null || echo "")
+            PREV_SERVER=$(cat "$BASE/meta/server_master.txt" 2>/dev/null || echo "")
+            PREV_TLS=$(cat "$BASE/meta/tls_master.txt" 2>/dev/null || echo "")
+            PREV_CDN=$(cat "$BASE/meta/cdn_master.txt" 2>/dev/null || echo "")
+
+            # Extract current infra info from httpx
+            jq -r '.ip' "$BASE/httpx/tech_now.json" | sort -u > "$BASE/meta/ips_now.txt"
+            jq -r '.asn' "$BASE/httpx/tech_now.json" | sort -u > "$BASE/meta/asn_now.txt"
+            jq -r '.server' "$BASE/httpx/tech_now.json" | sort -u > "$BASE/meta/server_now.txt"
+            jq -r '.tls' "$BASE/httpx/tech_now.json" | sort -u > "$BASE/meta/tls_now.txt"
+            jq -r '.cdn' "$BASE/httpx/tech_now.json" | sort -u > "$BASE/meta/cdn_now.txt"
+
+            # Major infra change detection
+            if ! diff "$BASE/meta/ips_master.txt" "$BASE/meta/ips_now.txt" >/dev/null 2>&1 || \
+               ! diff "$BASE/meta/asn_master.txt" "$BASE/meta/asn_now.txt" >/dev/null 2>&1 || \
+               ! diff "$BASE/meta/server_master.txt" "$BASE/meta/server_now.txt" >/dev/null 2>&1 || \
+               ! diff "$BASE/meta/tls_master.txt" "$BASE/meta/tls_now.txt" >/dev/null 2>&1; then
+              MSG=$(printf "⚙️ [MAJOR INFRA CHANGE]\nTarget: %s\nDetected At: %s\n\nIPs: %s\nASN: %s\nServer: %s\nTLS: %s" \
+                "$domain" "$(date -u)" \
+                "$(cat "$BASE/meta/ips_now.txt")" \
+                "$(cat "$BASE/meta/asn_now.txt")" \
+                "$(cat "$BASE/meta/server_now.txt")" \
+                "$(cat "$BASE/meta/tls_now.txt")")
+              send_msg "$MSG"
+            fi
+
+            # CDN removed alert
+            if [ -s "$BASE/meta/cdn_master.txt" ] && [ ! -s "$BASE/meta/cdn_now.txt" ]; then
+              MSG=$(printf "🚨 [CDN REMOVED]\nTarget: %s\nDetected At: %s\n\nPrevious CDN: %s\nCurrent CDN: None" \
+                "$domain" "$(date -u)" "$(cat "$BASE/meta/cdn_master.txt")")
+              send_msg "$MSG"
+            fi
+
+            # Update master files
+            cp "$BASE/meta/ips_now.txt" "$BASE/meta/ips_master.txt" 2>/dev/null || true
+            cp "$BASE/meta/asn_now.txt" "$BASE/meta/asn_master.txt" 2>/dev/null || true
+            cp "$BASE/meta/server_now.txt" "$BASE/meta/server_master.txt" 2>/dev/null || true
+            cp "$BASE/meta/tls_now.txt" "$BASE/meta/tls_master.txt" 2>/dev/null || true
+            cp "$BASE/meta/cdn_now.txt" "$BASE/meta/cdn_master.txt" 2>/dev/null || true
+
+            # Save daily snapshot
+            cp "$BASE/httpx/tech_now.json" "$BASE/httpx/history/$(date -u +%F).json"
+
           done < targets.txt
+
+          # -------------------------------
+          # Optional: daily infra diff summary (1 message for all domains)
+          SUMMARY="📊 [DAILY INFRA REPORT]\nDate: $(date -u +%F)\n"
+          for domain in $(cat targets.txt); do
+            BASE="data/$domain"
+            IP_DIFF=$(comm -3 <(sort "$BASE/meta/ips_master.txt") <(sort "$BASE/meta/ips_now.txt") | wc -l)
+            ASN_DIFF=$(comm -3 <(sort "$BASE/meta/asn_master.txt") <(sort "$BASE/meta/asn_now.txt") | wc -l)
+            SERVER_DIFF=$(comm -3 <(sort "$BASE/meta/server_master.txt") <(sort "$BASE/meta/server_now.txt") | wc -l)
+            TLS_DIFF=$(comm -3 <(sort "$BASE/meta/tls_master.txt") <(sort "$BASE/meta/tls_now.txt") | wc -l)
+            CDN_REMOVED=$([ -s "$BASE/meta/cdn_master.txt" ] && [ ! -s "$BASE/meta/cdn_now.txt" ] && echo 1 || echo 0)
+            SUMMARY+="$domain\n - IP changed: $IP_DIFF\n - ASN changed: $ASN_DIFF\n - Server changed: $SERVER_DIFF\n - TLS changes: $TLS_DIFF\n - CDN removed: $CDN_REMOVED\n"
+          done
+          send_msg "$SUMMARY"
