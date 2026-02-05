@@ -42,6 +42,13 @@ jobs:
         run: |
           set -euxo pipefail
           mkdir -p data
+
+          # Create targets.txt if it does not exist
+          if [ ! -f targets.txt ]; then
+            echo "Creating targets.txt with sample domains"
+            echo -e "example.com\nexample.org\nexample.net" > targets.txt
+          fi
+
           [ -f targets.txt ] || exit 0
 
           send_msg() {
@@ -55,8 +62,11 @@ jobs:
           while read -r domain; do
             [ -z "$domain" ] && continue
             BASE="data/$domain"
+            
+            # Create all necessary directories for each domain
             mkdir -p "$BASE"/{alive,ports,urls,nuclei,httpx,meta}/history
 
+            # Create all necessary files for each domain
             touch \
               "$BASE/alive/alive_master.txt" \
               "$BASE/nuclei/nuclei_master.txt" \
@@ -70,8 +80,10 @@ jobs:
 
             # ---------------- ALIVE HOSTS
             subfinder -d "$domain" -silent | assetfinder --subs-only | sort -u > "$BASE/alive/subs.txt"
-
+            echo "Subfinder and Assetfinder for $domain completed."
+            
             httpx -l "$BASE/alive/subs.txt" -silent -tech-detect -json > "$BASE/httpx/tech_now.json"
+            echo "HTTPX scan for $domain completed."
 
             jq -r '.host // empty' "$BASE/httpx/tech_now.json" | sort -u > "$BASE/alive/alive_now.txt"
 
@@ -139,3 +151,4 @@ jobs:
             cp "$BASE/httpx/tech_now.json" "$BASE/httpx/history/$(date -u +%F).json"
 
           done < targets.txt
+
