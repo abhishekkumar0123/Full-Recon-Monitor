@@ -41,114 +41,91 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           set -euxo pipefail
-          mkdir -p data
+          
+          # Make sure 'data' and all subdirectories are created
+          echo "Creating necessary directories..."
+          mkdir -p data/{alive,ports,urls,nuclei,httpx,meta}/history
 
-          # Create targets.txt if it does not exist
-          if [ ! -f targets.txt ]; then
-            echo "Creating targets.txt with sample domains"
-            echo -e "example.com\nexample.org\nexample.net" > targets.txt
+          # Create the files that need to be present
+          echo "Creating necessary files..."
+          touch \
+            data/alive/alive_master.txt \
+            data/nuclei/nuclei_master.txt \
+            data/ports/ports_master.txt \
+            data/urls/urls_master.txt \
+            data/meta/ips_master.txt \
+            data/meta/asn_master.txt \
+            data/meta/server_master.txt \
+            data/meta/tls_master.txt \
+            data/meta/cdn_master.txt
+
+          # ---------------- ALIVE HOSTS
+          echo "Running subfinder and assetfinder..."
+          subfinder -d example.com -silent | assetfinder --subs-only | sort -u > data/alive/subs.txt
+
+          echo "Running httpx..."
+          httpx -l data/alive/subs.txt -silent -tech-detect -json > data/httpx/tech_now.json
+
+          echo "Running jq to extract alive hosts..."
+          jq -r '.host // empty' data/httpx/tech_now.json | sort -u > data/alive/alive_now.txt
+
+          echo "Comparing with master list and adding new hosts..."
+          comm -13 data/alive/alive_master.txt data/alive/alive_now.txt > data/alive/alive_new.txt
+          if [ -s data/alive/alive_new.txt ]; then
+            MSG=$(printf "🆕 *NEW ALIVE HOSTS*\nTarget: `%s`\nTime: `%s`\n\n%s" \
+              "example.com" "$(date -u)" "$(head -n 50 data/alive/alive_new.txt)")
+            echo "$MSG"
+            cat data/alive/alive_new.txt >> data/alive/alive_master.txt
           fi
 
-          [ -f targets.txt ] || exit 0
+          # ---------------- NUCLEI
+          nuclei -l data/alive/alive_now.txt -silent | sort -u > data/nuclei/nuclei_now.txt
+          comm -13 data/nuclei/nuclei_master.txt data/nuclei/nuclei_now.txt > data/nuclei/nuclei_new.txt
+          if [ -s data/nuclei/nuclei_new.txt ]; then
+            MSG=$(printf "🚨 *NUCLEI FINDINGS*\nTarget: `%s`\nTime: `%s`\n\n%s" \
+              "example.com" "$(date -u)" "$(head -n 10 data/nuclei/nuclei_new.txt)")
+            echo "$MSG"
+            cat data/nuclei/nuclei_new.txt >> data/nuclei/nuclei_master.txt
+          fi
 
-          send_msg() {
-            curl -s "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendMessage" \
-              --data-urlencode "chat_id=$TELEGRAM_CHAT_ID" \
-              --data-urlencode "parse_mode=Markdown" \
-              --data-urlencode "disable_web_page_preview=true" \
-              --data-urlencode "text=$1" >/dev/null || true
-          }
+          # ---------------- PORTS
+          naabu -list data/alive/alive_now.txt -silent | sort -u > data/ports/ports_now.txt
+          comm -13 data/ports/ports_master.txt data/ports/ports_now.txt > data/ports/ports_new.txt
+          if [ -s data/ports/ports_new.txt ]; then
+            MSG=$(printf "🔓 *NEW OPEN PORTS*\nTarget: `%s`\nTime: `%s`\n\n%s" \
+              "example.com" "$(date -u)" "$(head -n 20 data/ports/ports_new.txt)")
+            echo "$MSG"
+            cat data/ports/ports_new.txt >> data/ports/ports_master.txt
+          fi
 
-          while read -r domain; do
-            [ -z "$domain" ] && continue
-            BASE="data/$domain"
-            
-            # Create all necessary directories for each domain
-            mkdir -p "$BASE"/{alive,ports,urls,nuclei,httpx,meta}/history
+          # ---------------- URLS
+          katana -list data/alive/alive_now.txt -silent | \
+            grep -Ei "admin|login|api|upload|dashboard|\?" | sort -u > data/urls/urls_now.txt
+          comm -13 data/urls/urls_master.txt data/urls/urls_now.txt > data/urls/urls_new.txt
+          if [ -s data/urls/urls_new.txt ]; then
+            MSG=$(printf "🆕 *NEW ENDPOINTS*\nTarget: `%s`\nTime: `%s`\n\n%s" \
+              "example.com" "$(date -u)" "$(head -n 20 data/urls/urls_new.txt)")
+            echo "$MSG"
+            cat data/urls/urls_new.txt >> data/urls/urls_master.txt
+          fi
 
-            # Create all necessary files for each domain
-            touch \
-              "$BASE/alive/alive_master.txt" \
-              "$BASE/nuclei/nuclei_master.txt" \
-              "$BASE/ports/ports_master.txt" \
-              "$BASE/urls/urls_master.txt" \
-              "$BASE/meta/ips_master.txt" \
-              "$BASE/meta/asn_master.txt" \
-              "$BASE/meta/server_master.txt" \
-              "$BASE/meta/tls_master.txt" \
-              "$BASE/meta/cdn_master.txt"
+          # ---------------- INFRA
+          jq -r '.ip // empty' data/httpx/tech_now.json | sort -u > data/meta/ips_now.txt
+          jq -r '.asn // empty' data/httpx/tech_now.json | sort -u > data/meta/asn_now.txt
+          jq -r '.server // empty' data/httpx/tech_now.json | sort -u > data/meta/server_now.txt
+          jq -r '.tls // empty' data/httpx/tech_now.json | sort -u > data/meta/tls_now.txt
+          jq -r '.cdn // empty' data/httpx/tech_now.json | sort -u > data/meta/cdn_now.txt
 
-            # ---------------- ALIVE HOSTS
-            subfinder -d "$domain" -silent | assetfinder --subs-only | sort -u > "$BASE/alive/subs.txt"
-            echo "Subfinder and Assetfinder for $domain completed."
-            
-            httpx -l "$BASE/alive/subs.txt" -silent -tech-detect -json > "$BASE/httpx/tech_now.json"
-            echo "HTTPX scan for $domain completed."
+          echo "Checking for infrastructure changes..."
+          if ! diff data/meta/asn_master.txt data/meta/asn_now.txt >/dev/null || \
+             ! diff data/meta/server_master.txt data/meta/server_now.txt >/dev/null || \
+             ! diff data/meta/tls_master.txt data/meta/tls_now.txt >/dev/null; then
+            MSG=$(printf "⚙️ *MAJOR INFRA CHANGE*\nTarget: `%s`\nTime: `%s`" \
+              "example.com" "$(date -u)")
+            echo "$MSG"
+          fi
 
-            jq -r '.host // empty' "$BASE/httpx/tech_now.json" | sort -u > "$BASE/alive/alive_now.txt"
-
-            comm -13 "$BASE/alive/alive_master.txt" "$BASE/alive/alive_now.txt" > "$BASE/alive/alive_new.txt"
-            if [ -s "$BASE/alive/alive_new.txt" ]; then
-              MSG=$(printf "🆕 *NEW ALIVE HOSTS*\nTarget: `%s`\nTime: `%s`\n\n%s" \
-                "$domain" "$(date -u)" "$(head -n 50 "$BASE/alive/alive_new.txt")")
-              send_msg "$MSG"
-              cat "$BASE/alive/alive_new.txt" >> "$BASE/alive/alive_master.txt"
-            fi
-
-            # ---------------- NUCLEI
-            nuclei -l "$BASE/alive/alive_now.txt" -silent | sort -u > "$BASE/nuclei/nuclei_now.txt"
-            comm -13 "$BASE/nuclei/nuclei_master.txt" "$BASE/nuclei/nuclei_now.txt" > "$BASE/nuclei/nuclei_new.txt"
-            if [ -s "$BASE/nuclei/nuclei_new.txt" ]; then
-              MSG=$(printf "🚨 *NUCLEI FINDINGS*\nTarget: `%s`\nTime: `%s`\n\n%s" \
-                "$domain" "$(date -u)" "$(head -n 10 "$BASE/nuclei/nuclei_new.txt")")
-              send_msg "$MSG"
-              cat "$BASE/nuclei/nuclei_new.txt" >> "$BASE/nuclei/nuclei_master.txt"
-            fi
-
-            # ---------------- PORTS
-            naabu -list "$BASE/alive/alive_now.txt" -silent | sort -u > "$BASE/ports/ports_now.txt"
-            comm -13 "$BASE/ports/ports_master.txt" "$BASE/ports/ports_now.txt" > "$BASE/ports/ports_new.txt"
-            if [ -s "$BASE/ports/ports_new.txt" ]; then
-              MSG=$(printf "🔓 *NEW OPEN PORTS*\nTarget: `%s`\nTime: `%s`\n\n%s" \
-                "$domain" "$(date -u)" "$(head -n 20 "$BASE/ports/ports_new.txt")")
-              send_msg "$MSG"
-              cat "$BASE/ports/ports_new.txt" >> "$BASE/ports/ports_master.txt"
-            fi
-
-            # ---------------- URLS
-            katana -list "$BASE/alive/alive_now.txt" -silent | \
-              grep -Ei "admin|login|api|upload|dashboard|\?" | sort -u > "$BASE/urls/urls_now.txt"
-            comm -13 "$BASE/urls/urls_master.txt" "$BASE/urls/urls_now.txt" > "$BASE/urls/urls_new.txt"
-            if [ -s "$BASE/urls/urls_new.txt" ]; then
-              MSG=$(printf "🆕 *NEW ENDPOINTS*\nTarget: `%s`\nTime: `%s`\n\n%s" \
-                "$domain" "$(date -u)" "$(head -n 20 "$BASE/urls/urls_new.txt")")
-              send_msg "$MSG"
-              cat "$BASE/urls/urls_new.txt" >> "$BASE/urls/urls_master.txt"
-            fi
-
-            # ---------------- INFRA
-            jq -r '.ip // empty' "$BASE/httpx/tech_now.json" | sort -u > "$BASE/meta/ips_now.txt"
-            jq -r '.asn // empty' "$BASE/httpx/tech_now.json" | sort -u > "$BASE/meta/asn_now.txt"
-            jq -r '.server // empty' "$BASE/httpx/tech_now.json" | sort -u > "$BASE/meta/server_now.txt"
-            jq -r '.tls // empty' "$BASE/httpx/tech_now.json" | sort -u > "$BASE/meta/tls_now.txt"
-            jq -r '.cdn // empty' "$BASE/httpx/tech_now.json" | sort -u > "$BASE/meta/cdn_now.txt"
-
-            if ! diff "$BASE/meta/asn_master.txt" "$BASE/meta/asn_now.txt" >/dev/null || \
-               ! diff "$BASE/meta/server_master.txt" "$BASE/meta/server_now.txt" >/dev/null || \
-               ! diff "$BASE/meta/tls_master.txt" "$BASE/meta/tls_now.txt" >/dev/null; then
-              MSG=$(printf "⚙️ *MAJOR INFRA CHANGE*\nTarget: `%s`\nTime: `%s`" \
-                "$domain" "$(date -u)")
-              send_msg "$MSG"
-            fi
-
-            if [ -s "$BASE/meta/cdn_master.txt" ] && [ ! -s "$BASE/meta/cdn_now.txt" ]; then
-              MSG=$(printf "🚨 *CDN REMOVED*\nTarget: `%s`\nTime: `%s`" \
-                "$domain" "$(date -u)")
-              send_msg "$MSG"
-            fi
-
-            cp "$BASE/meta/"*_now.txt "$BASE/meta/" 2>/dev/null || true
-            cp "$BASE/httpx/tech_now.json" "$BASE/httpx/history/$(date -u +%F).json"
-
-          done < targets.txt
+          # Copy new files over to master lists
+          cp data/meta/*_now.txt data/meta/ 2>/dev/null || true
+          cp data/httpx/tech_now.json data/httpx/history/$(date -u +%F).json
 
